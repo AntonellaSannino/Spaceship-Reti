@@ -12,9 +12,9 @@
 
 
 #define BUFFER_SIZE 1024
-#define MAX_CLIENT 10
+#define MAX_CLIENT 2
 
-struct TwoDpoint
+struct Point2D
 {
 	int x,y;
 };
@@ -26,12 +26,17 @@ int main(int argc, char **argv)
     char buffer[BUFFER_SIZE];
     bool new_client=false;
     bool game_started=false;
-    struct sockaddr_in addr, input, client[MAX_CLIENT];
+    bool in_game[MAX_CLIENT];
+    bool status_game=false;
+    bool first_message=true;
+    struct sockaddr_in addr, last_client, input, client[MAX_CLIENT];
     int up_client=0;
     int in_len=sizeof(input);
     socklen_t addr_len = sizeof(addr);
-    struct TwoDpoint point[2];
-    struct timeval timev; 
+    struct Point2D point[2];
+    struct timeval timeout_game; 
+
+    fd_set readfds;
 
     srand(time(NULL));
 
@@ -40,6 +45,7 @@ int main(int argc, char **argv)
         perror("socket");
         exit(1);
     }
+
     else 
     {      //verifica se la sock è ok
         printf("ok sock\n");
@@ -72,133 +78,187 @@ int main(int argc, char **argv)
     }
     
     
-    timev.tv_sec=20;
-    timev.tv_usec=0;
+    timeout_game.tv_sec=30;
+    timeout_game.tv_usec=0;
 
-     if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timev, sizeof(timev)) < 0) {
-    perror("Error in setsockopt");
-    close(sock);
-    exit(EXIT_FAILURE);
+
+
+    for(int j=0; j<MAX_CLIENT; j++)
+    {
+        in_game[j]=false;
     }
 
-    while(1) 
+    time_t start_time = time(NULL);
+
+
+    while(1)
     {
 
-    
+        memset(buffer, 0, BUFFER_SIZE);
+        
+        FD_ZERO(&readfds); 
+        FD_SET(sock, &readfds);
+        int selectfd=select(sock+1, &readfds,NULL, NULL, &timeout_game);
+        if (selectfd <0 && errno!=EINTR)
+        {
+            perror("Errore nella select");
+            exit(1);
+        }
 
-        msg=recvfrom(sock, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&input,&in_len);
-        if(msg<0)
+        if(FD_ISSET(sock, &readfds))
         {
 
-           if (errno == EAGAIN || errno == EWOULDBLOCK) // Timeout scaduto
-            {
-                printf("Timeout scaduto. Inizio della partita con %d client connessi.\n", up_client);
-                break;
-            }
-        	
-            else {
+            memset(buffer, 0, BUFFER_SIZE);
 
-                perror("errore nella ricezione del messaggio");	
-                exit(-1);
+            msg=recvfrom(sock, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&input,&in_len);
+            
+
+			if(msg<0)
+            {
+
+				perror("errore nella ricezione del messaggio"); 
+				exit(-1);
+               
             }
-        	
+
+            buffer[msg]=0;
+
+
+            if(first_message || input.sin_port != last_client.sin_port || input.sin_addr.s_addr != last_client.sin_addr.s_addr)
+            {
+                printf("Ricevuto pacchetto da %s:%d\ndata:%s\n\n",inet_ntoa(input.sin_addr),ntohs(input.sin_port),buffer);
+
+                last_client = input; 
+                first_message=false;
+            }
+
+            else if (strcmp(buffer,"exit")==0)
+            {
+                for (int j=0; j<up_client; j++)
+                {
+                    if(input.sin_port==client[j].sin_port && input.sin_addr.s_addr == client[j].sin_addr.s_addr)
+                    {
+                        in_game[j]=false;
+                        up_client--;
+                    }
+                }
+            }
+
         }
-    
-        buffer[msg]=0;
-    
-        printf("ricevuto pacchetto da %s:%d\ndata:%s\n\n",inet_ntoa(input.sin_addr),ntohs(input.sin_port),buffer);
-    
-        
+
         if (up_client<=0)
         {
-        	client[up_client].sin_family=AF_INET;
-        	client[up_client].sin_port=input.sin_port;
-         	client[up_client].sin_addr.s_addr=input.sin_addr.s_addr;
+            client[up_client].sin_family=AF_INET; 
+            client[up_client].sin_port=input.sin_port;
+            client[up_client].sin_addr.s_addr=input.sin_addr.s_addr;
             printf("Nuovo client connesso! IP: %s, PORTA: %d\n",
             inet_ntoa(client[up_client].sin_addr), ntohs(client[up_client].sin_port));
-           	up_client++;
+            in_game[up_client]=true;
+            up_client++;
+
         }
         
         else
         {
 
-        	for( i=0; i<up_client; i++)
-        	{
-            	 if(client[i].sin_port==input.sin_port && client[i].sin_addr.s_addr==input.sin_addr.s_addr)
-            	 {
-            	  	new_client=false;
-            	 }  
+            for( i=0; i<up_client; i++)
+            {
+                 if(client[i].sin_port==input.sin_port && client[i].sin_addr.s_addr==input.sin_addr.s_addr)
+                 {
+                    new_client=false;
+                    break;
+                 }  
 
 
-                 else{
+                 else
+				 {
                     new_client=true;
                  }   
-            	 
-        	}
-        	
-        	if (new_client==true && i<=MAX_CLIENT)
-        	{
-        		client[i]=input;
-        		printf("Nuovo client connesso! IP: %s, PORTA: %d\n",
-                inet_ntoa(client[i].sin_addr), ntohs(client[i].sin_port));
-        		new_client=false;
-        		i=0;
-                up_client++;
-        	}
-
-
+                 
+            }
             
+            if (new_client==true && up_client<=MAX_CLIENT)
+            {
+                client[i]=input;
+                printf("Nuovo client connesso! IP: %s, PORTA: %d\n",
+                inet_ntoa(client[i].sin_addr), ntohs(client[i].sin_port));
+                new_client=false;
+                i=0;
+                in_game[up_client]=true;
+                up_client++;
+            }
 
+            if(new_client==true && up_client>=MAX_CLIENT)
+            {
+            	int index_full;
+                for(index_full=0; index_full<MAX_CLIENT; index_full++)
+                {
+                    if(in_game[index_full]==false)
+                    {
+                        client[index_full]=input;
+                        printf("Nuovo client connesso! IP: %s, PORTA: %d\n",
+                        inet_ntoa(client[index_full].sin_addr), ntohs(client[index_full].sin_port));
+                        new_client=false;
+                        i=0;
+                        in_game[up_client]=true;
+                        up_client++;
+                        break;
+                    }
+
+                }
+                
+                    if(index_full==MAX_CLIENT)
+                    {
+                        int msg_full;
+                        char too_full[]="Troppi client connessi!";
+                        msg_full=sendto(sock, too_full, sizeof(too_full), 0, (struct sockaddr *) &input, sizeof(input));
+                    }
+            }
 
         }
 
+        if (game_started || time(NULL) - start_time >= 10)
+        {
+            game_started = true;
+        }
+
+        for (int j=0; j<2; j++)
+		{
+             point[j].x=rand()%8;
+             point[j].y=rand()%8;
+             printf("Punto generato %d:%d \n",point[j].x, point[j].y);
+		}
 
 
 
-
-      
-      
-     
-        
-        
-    }
-    
-
-
-    while(1)
-    {
-        printf("La partita inizia adesso! \n");
-            game_started=true;
-            //genero random
-            while(game_started!=false)
+        for (int k=0; k<MAX_CLIENT; k++)
+        {
+            if(in_game[k])
             {
-                sleep(2);
-               for (int j=0; j<2; j++)
-               {
-                  point[j].x=rand()%8;
-                  point[j].y=rand()%8;
-
-                  printf("Punto generato %d:%d \n",point[j].x, point[j].y);
-               }
-
-
-            for (int k=0; k<up_client; k++)
-            {
-                msg_meteorite = sendto(sock, point, sizeof(point), 0, (struct sockaddr *) &client[k], sizeof (client[k]));
-                 if (msg_meteorite < 0) {     
-                printf("Errore nell'invio del pacchetto: %s", strerror(errno));
-                exit(1);
+                 msg_meteorite = sendto(sock, point, sizeof(point), 0, (struct sockaddr *) &client[k], sizeof (client[k]));
+                 if (msg_meteorite < 0) 
+                 { 
+                    printf("Errore nell'invio del pacchetto: %s", strerror(errno));
+                    exit(1);
                 }
             }
-
-    }
-}
-
-        
-     
-
-        
+           
+        }
 
 
+        timeout_game.tv_sec = 2;
+        timeout_game.tv_usec = 0;
+
+
+    }  
+
+    close(sock);
+    return 0;
+
+
+
+ 
+ 
+      
 
 }
